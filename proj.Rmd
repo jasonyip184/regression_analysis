@@ -1,0 +1,297 @@
+---
+title: "ST3131 Project"
+output: html_notebook
+---
+
+```{r include=FALSE}
+knitr::opts_chunk$set(comment = NA)
+```
+
+# Libraries
+```{r message=FALSE, warning=FALSE}
+library(dplyr);
+library(ggplot2);
+library(GGally);
+library(vioplot);
+library(corpcor);
+library(ppcor);
+library(mctest);
+library(ggfortify);
+library(lmtest);
+library(MASS);
+library(car);
+library(DAAG);
+library(jtools);
+library(relaimpo);
+```
+
+# Load data
+```{r}
+data = read.csv("Admission_Data.csv")
+df = data[,2:9]
+```
+
+Response variable: Chance.of.Admit
+Predictors: Everything else
+
+# Descriptive stats
+```{r}
+summary(df)
+```
+
+# Distribution plots
+```{r fig.width=8, fig.height=14}
+par(mfrow=c(4, 2))
+colnames = names(df)
+for(name in colnames) {
+  vioplot(df[name], horizontal=TRUE, col='gold', lineCol='gold', lty=0, colMed='floralwhite', yaxt='n',rectCol='dodgerblue4')
+  title(main=name)
+}
+```
+
+From our plots, we can see a bell-shape for all variables other than Research, which is a binary variable. This indicates that both predictors and response seem to follow a roughly normal distribution. 
+
+There is no extreme skew for the variables. this makes the confidence intervals for estimating parameters for our predictors and estimating the mean response more meaningful.
+
+
+# Check for 1) Linearity between DV and each of the IVs 2) Multicollinearity between IVs
+```{r echo=FALSE, fig.width=8, fig.height=10}
+ggpairs(df, progress=FALSE)
+```
+
+From the last row, we can observe that most of the IVs seem to have a linear relationship with our response variable except for the binary variable Research. Therefore the assumption for linearity between DV and each of IVs hold.
+
+The pairwise correlation for all variables are fairly high. This seems to violate the Multiple Linear Regression's assumption of No Multicollinearity.
+
+
+# Partial Correlation coefficients
+To account for confounding effects from the other predictors.
+```{r}
+pcorr = as.data.frame(cor2pcor(cov(df)))
+names(pcorr) = names(df)
+rownames(pcorr) = names(df)
+pcorr = format(pcorr, digits=1)
+print.data.frame(pcorr)
+```
+
+The partial correlation coefficients suggest otherwise, that there is less multicollinearity with only GRE.Score & TOEFL.Score having a value > 0.4. Partial correlation between CGPA and our response variable Chance.of.Admit is fairly high but it does not violate the "No Multicollinearity between its IVs assumption" of MLR.
+
+
+# Using Individual Multicollinearity Diagnostics Measures
+```{r}
+imcdiag(df[,1:7],df$Chance.of.Admit)
+```
+
+All the predictors have a VIF (=1/(1-R^2)) value of <5 which indicates that the multicollinearity is not so problematic.
+
+
+# Fitting MLR
+```{r}
+fit = lm(Chance.of.Admit ~ ., data=df)
+summary(fit)
+```
+
+Fit:
+Chance.of.Admit = -1.28 + 0.00186(GRE.Score) + 0.00278(TOEFL.Score) + 0.00594(University.Rating) + 0.00159(SOP) + 0.0169(LOR) + 0.118(CGPA) + 0.0243(Research)  (3s.f.)
+
+This indicates that on average, a unit increase in GRE.Score/TOEFL.Score/University.Rating/SOP/LOR/CGPA/Research increases Chance.of.Admit by 0.00186/0.00278/0.00594/0.00159/0.0169/0.118/0.0243, while holding all other variables constant. 
+
+The p-value for the F-statistic is  <2.2e-16, indicating that we can reject the null hypothesis that the intercept-only model is the same fit as the MLR model even at alpha=0.001. Therefore, the MLR model is highly statistically significant at the 0.01 significance level.
+
+The Adjusted R-squared:  0.8194 is high which suggests that the model is a good fit.
+
+The coefficients for GRE.Score, TOEFL.Score, LOR, CGPA, Research are statistically significant at alpha=0.01 where the respective pvalues < 0.01 as we reject the null that their coeffs is 0 at the 0.01 significance level.
+
+The coefficients for University.Rating (0.118) and SOP (0.728263) are >0.01 and we fail to reject the null that their coeffs is 0 at the 0.01 significance level.
+
+
+# Model diagnostics
+```{r}
+autoplot(fit)
+```
+
+1. Residuals vs Fitted
+The blue line (average value of the residuals at each value of fitted value) is nearly flat. This shows that there is no clear non-linear trend to the residuals. 
+The residuals appear to be randomly spread out, but it converges when near the higher fitted values. This appears to be a decrease in variance and it violates the Homoscedasticity assumption of the MLR. 
+
+
+```{r}
+bptest(fit)
+```
+Using the Breusch-Pagan test to confirm, we can reject the null hypothesis at the 0.05 significance level that variance of the residuals is constant and infer that heteroscedasticity is present.
+Therefore, this makes our coefficient estimates less precise and increases the likelihood that the estimates are further from the true population value.
+
+
+2. Normal Q-Q
+The residuals seem to deviate a lot from the diagonal line in the lower tail. The distribution of residuals is skewed to the left. This suggests that the assumption that of Normality in the Residuals by the MLR model is violated.
+
+Transforming response variable using Box-Cox Power transformation to make it normal and handle heteroscedasticity
+
+
+```{r}
+bc = boxcox(Chance.of.Admit ~ ., data=df);
+lambda = bc$x[which.max(bc$y)]
+
+powerTransform <- function(y, lambda1, lambda2 = NULL, method = "boxcox") {
+  boxcoxTrans <- function(x, lam1, lam2 = NULL) {
+    # if we set lambda2 to zero, it becomes the one parameter transformation
+    lam2 <- ifelse(is.null(lam2), 0, lam2)
+    if (lam1 == 0L) {
+      log(y + lam2)
+    } else {
+      (((y + lam2)^lam1) - 1) / lam1
+    }
+  }
+  switch(method
+         , boxcox = boxcoxTrans(y, lambda1, lambda2)
+         , tukey = y^lambda1
+  )
+}
+
+
+# re-run with transformation
+bcfit <- lm(powerTransform(Chance.of.Admit, lambda) ~ ., data=df)
+```
+
+The procedure identifies an appropriate exponent (Lambda = l) to use to transform data into a "normal shape. The Lambda value indicates the power to which all data should be raised and it is suggested to use lambda=2.
+
+
+```{r}
+summary(bcfit)
+```
+The Adjusted R-squared increased from 0.8194 to 0.8471 while the predictors remain significant. However, this model is less interpretable and we want our models to be parsimonious as possible. We will explore more models later on.
+
+
+3. Residuals vs Leverage
+This helps us to find influential outliers. They are points above the dashed line which are not approximated well by the model (has high residual) and significantly influences model fit (has high leverage). By considering Cook's D > 4/sample size criterion, we identify influential outliers to remove.
+
+
+```{r}
+cooksd <- cooks.distance(fit)
+sample_size <- nrow(df)
+plot(cooksd, pch="*", cex=2, main="Influential Obs by Cooks distance")
+abline(h = 4/sample_size, col="red")
+text(x=1:length(cooksd)+1, y=cooksd, labels=ifelse(cooksd>4/sample_size, names(cooksd),""), col="red")
+```
+
+# Re-fit MLR with outliers removed
+```{r}
+influential = as.numeric(names(cooksd)[(cooksd > (4/sample_size))])
+df2 = df[-influential, ]
+fit2 = lm(Chance.of.Admit ~ ., data=df2)
+summary(fit2)
+```
+
+By removing the highly influential outliers, we refitted the model on the filtered data and the Adjusted R-squared increased to 0.8194 to 0.8916 without introducing complexity to the model.`
+
+
+# Fitting the model using a function of the response variable
+```{r}
+fit3 = lm(exp(Chance.of.Admit) ~ ., data=df2)
+summary(fit3)
+```
+
+By regressing the exponent of our response on the predictors, we got an increase in Adjusted R-squared from 0.8916 to 0.9023 while the predictors still remain significnant.
+
+
+# Accounting for interactions by adding Interaction term
+```{r}
+fit4 = lm(exp(Chance.of.Admit) ~ GRE.Score*University.Rating+TOEFL.Score+Research+SOP+LOR+CGPA, data=df2)
+summary(fit4)
+```
+The model shows a signifcant interaction between GRE.Score & University.Rating as the p-value=0.000799 < 0.001 and is significant at the 0.001 significance level.
+
+Interaction arises as the relationship between Chance.of.Admit and the IVs: GRE.Score and University.Rating is affected by the interaction between the GRE.Score & University.Rating. This makes it hard to predict the consequence of changing the value of GRE.Score & University.Rating without controlling for this interaction.
+
+
+# Comparing nested models with ANOVA
+```{r}
+anova(fit3, fit4)
+```
+
+The first order model is nested within the interaction model.
+By using ANOVA to compare the simpler first order model vs the more complex model with interaction term, the p-value=0.0007995 is <0.001. The null hypothesis that the reduced simpler model is adequate is rejected at the 0.001 significance level. Therefore, the complex model did significantly improve the fit over the simpler model.
+
+
+# Drop insignificant predictor SOP
+```{r}
+fit5 = lm(exp(Chance.of.Admit) ~ GRE.Score*University.Rating+TOEFL.Score+Research+LOR+CGPA, data=df2)
+summary(fit5)
+```
+Previously, SOP was insignificant at the 0.05 significance level and even after removing it, the model's Adjusted R-squared is still 0.904.
+
+
+# Variable selection using stepwise model selection by AIC
+```{r}
+step <- stepAIC(fit5, direction="both")
+step$anova
+```
+
+A model with fewer parameters is to be preferred to one with more. AIC considers both the fit of the model and the number of parameters used. Having more parameters result in penalty. AIC helps to balance over- and under-fitting. The stepwise model comparison iteratively adds/removes variables one at a time and compares the AIC. The lowest AIC is selected for the final model. In our case, there no further addition or removal of variables required by AIC.
+
+
+# Relative feature importance 
+```{r}
+calc.relimp(fit5,type="lmg", rela=TRUE)
+```
+
+GRE.Score                   0.257942619
+University.Rating           0.166817030
+TOEFL.Score                 0.156223517
+Research                    0.069331682
+LOR                         0.096284401
+CGPA                        0.250802724
+GRE.Score:University.Rating 0.002598027
+
+Relative importance is measured by an algorithm by Lindemann, Merenda and Gold (lmg; 1980) which decomposes total R-squared and observe the increase in R-squared by adding the predictors sequentially. The order of adding predictors matters and therefore, the algorithm takes the average of the R-squared across all orderings.
+
+The features are ranked in this order with highest relative importance first: GRE.Score, CGPA, University.Rating, TOEFL.Score, LOR, Research and GRE.Score*University.Rating.
+
+
+# K-Fold cross-validation results on final model
+```{r}
+cv_new = CVlm(data=df2, fit5, m=3, printit=FALSE)
+```
+
+```{r}
+attr(cv_new, "ms")
+```
+
+Each of the k-fold model's prediction accuracy isn't varying too much for any one particular sample, and the lines of best fit from the k-folds don't vary too much with respect the the slope and level.
+The average mean square error of the predictions for 3 portions is 0.00775. The value is low and represents a good accuracy result.  
+
+
+# 95% CIs for every IV's estimates
+```{r}
+export_summs(fit5, error_format = "[{conf.low}, {conf.high}]", digits=5)
+```
+
+```{r}
+plot_summs(fit5)
+```
+
+# Individual CI plots
+```{r}
+effect_plot(fit4, pred = GRE.Score, interval = TRUE, plot.points = TRUE)
+effect_plot(fit4, pred = University.Rating, interval = TRUE, plot.points = TRUE)
+effect_plot(fit4, pred = TOEFL.Score, interval = TRUE, plot.points = TRUE)
+effect_plot(fit4, pred = Research, interval = TRUE, plot.points = TRUE)
+effect_plot(fit4, pred = LOR, interval = TRUE, plot.points = TRUE)
+effect_plot(fit4, pred = CGPA, interval = TRUE, plot.points = TRUE)
+```
+
+# Final model
+```{r}
+summary(fit5)
+```
+
+Fit:
+Chance.of.Admit = -0.989 + 0.000802(GRE.Score) -0.300(University.Rating) + 0.00565(TOEFL.Score) + 0.0499(Research) + 0.0320(LOR) + 0.236(CGPA) + 0.00100(GRE.Score*University.Rating)  (3s.f.)
+
+This indicates that on average, a unit increase in GRE.Score/University.Rating/TOEFL.Score/Research/LOR/CGPA/GRE.Score*University.Rating increases Chance.of.Admit by 0.000802/-0.300/0.00565/0.0499/0.0320/0.236/0.00100, while holding all other variables constant. 
+
+The p-value for the F-statistic is  <2.2e-16, indicating that we can reject the null hypothesis that the intercept-only model is the same fit as the MLR model even at alpha=0.001. Therefore, the MLR model is highly statistically significant at the 0.01 significance level.
+
+The Adjusted R-squared:  0.904 is high which suggests that the model is a highly good fit.
+
+The coefficients for all the IVs and the interaction term (except for GRE.Score) are statistically significant at alpha=0.01 where the respective pvalues < 0.01 as we reject the null that their coeffs is 0 at the 0.01 significance level.
